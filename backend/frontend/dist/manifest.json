@@ -1,0 +1,26 @@
+{
+  "name": "局域网即时通信",
+  "short_name": "LAN Chat",
+  "description": "局域网即时通信系统 - 支持聊天、文件传输、历史记录",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#409EFF",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["social", "productivity"],
+  "lang": "zh-CN"
+}
