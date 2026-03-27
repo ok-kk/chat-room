@@ -1,0 +1,1 @@
+function i(e){return window.runtime.ClipboardSetText(e)}function t(e,n){return window.runtime.OnFileDrop(e,n)}function r(){return window.runtime.OnFileDropOff()}function o(){return window.runtime.CanResolveFilePaths()}function u(e){return window.runtime.ResolveFilePaths(e)}export{o as C,r as O,u as R,t as a,i as b};

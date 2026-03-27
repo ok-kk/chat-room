@@ -1,5 +1,5 @@
-<template>
-  <div class="chat">
+﻿<template>
+  <div class="chat" @dragover.prevent @drop.prevent="handleDomDrop">
     <div class="header">
       <div>
         <h2>LAN Chat</h2>
@@ -13,17 +13,24 @@
       </div>
     </div>
 
+    <div v-if="windowDropActive" class="window-drop-overlay">
+      <div class="window-drop-card">
+        <div class="window-drop-title">Drop files to send</div>
+        <div class="window-drop-subtitle">Release anywhere in the window</div>
+      </div>
+    </div>
+
     <div class="messages" ref="msgBox">
       <div v-if="!messages.length" class="empty">No messages yet</div>
-      <div v-for="(msg, i) in messages" :key="msg.id || `${msg.created_at}-${i}`" class="msg" :class="{ self: msg.sender_id === userId }">
+      <div v-for="msg in messages" :key="messageKey(msg)" class="msg" :class="{ self: msg.sender_id === userId }">
         <el-avatar :size="36" :style="{ background: color(msg.sender_name) }">{{ msg.sender_name?.[0] }}</el-avatar>
         <div class="body">
           <div class="meta">
             <span class="name">{{ msg.sender_name }}</span>
             <span class="time">{{ fmtTime(msg.created_at) }}</span>
-            <button class="del-btn" type="button" @click="delMsg(msg, i)">&times;</button>
+            <button class="del-btn" type="button" @click="delMsg(msg)">&times;</button>
           </div>
-          <div v-if="msg.msg_type === 'text'" class="content">{{ msg.content }}</div>
+          <div v-if="msg.msg_type === 'text'" class="content text-content">{{ msg.content }}</div>
           <div v-else class="file-box">
             <img
               v-if="isImg(msg.file_name)"
@@ -38,7 +45,7 @@
             </div>
             <div class="file-btns">
               <button class="btn-dl" type="button" @click="dl(msg.file_url)">Download</button>
-              <button class="btn-del" type="button" @click="delMsg(msg, i)">Delete</button>
+              <button class="btn-del" type="button" @click="delMsg(msg)">Delete</button>
             </div>
           </div>
         </div>
@@ -49,12 +56,16 @@
       <input ref="fileInput" type="file" multiple hidden @change="handleFiles" />
       <button class="btn-attach" type="button" @click="fileInput?.click()">&#128206;</button>
       <div v-if="uploading" class="upload-info">Uploading {{ upDone }}/{{ upTotal }}</div>
-      <input
+      <textarea
+        ref="textInput"
         v-model="input"
         class="text-input"
         placeholder="Type a message..."
-        @keyup.enter="send"
+        @keydown.enter.exact.prevent="send"
+        @paste="handlePaste"
+        @input="autoResizeInput"
         :disabled="!connected"
+        rows="1"
       />
       <button class="btn-send" type="button" @click="send" :disabled="!connected || !input.trim()">Send</button>
     </div>
@@ -64,10 +75,11 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshRight, SwitchButton } from '@element-plus/icons-vue'
+import { OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime'
 import { getHttpBase, getWsBase, makeAbsoluteUrl } from '../utils/network'
-import { DeleteMessage as WailsDeleteMessage, GetMessages as WailsGetMessages } from '../../wailsjs/go/main/App'
+import { DeleteMessage as WailsDeleteMessage, GetMessages as WailsGetMessages, SaveUploadedFile } from '../../wailsjs/go/main/App'
 
 const router = useRouter()
 const userId = ref('')
@@ -77,11 +89,13 @@ const input = ref('')
 const connected = ref(false)
 const msgBox = ref(null)
 const fileInput = ref(null)
+const textInput = ref(null)
 const uploading = ref(false)
 const upDone = ref(0)
 const upTotal = ref(0)
 const onlineUsers = ref([])
 const refreshing = ref(false)
+const windowDropActive = ref(false)
 let ws = null
 let reconnectTimer = null
 let isLeaving = false
@@ -107,21 +121,89 @@ onMounted(() => {
 
   loadHistory({ silent: true })
   connectWS()
+  setupWindowDrop()
 })
 
 onUnmounted(() => {
   isLeaving = true
   clearTimeout(reconnectTimer)
   if (ws) ws.close()
+  if (isWailsRuntime()) {
+    OnFileDropOff()
+  }
+  window.removeEventListener('dragenter', handleWindowDragEnter)
+  window.removeEventListener('dragleave', handleWindowDragLeave)
+  window.removeEventListener('drop', handleWindowDropEnd)
 })
+
+const setupWindowDrop = () => {
+  if (isWailsRuntime()) {
+    OnFileDrop(async (_x, _y, paths) => {
+      if (!Array.isArray(paths) || !paths.length) return
+      await confirmAndUploadPaths(paths)
+    }, false)
+  }
+
+  window.addEventListener('dragenter', handleWindowDragEnter)
+  window.addEventListener('dragleave', handleWindowDragLeave)
+  window.addEventListener('drop', handleWindowDropEnd)
+}
+
+const handleWindowDragEnter = (event) => {
+  if (event.dataTransfer?.types?.includes('Files')) {
+    windowDropActive.value = true
+  }
+}
+
+const handleWindowDragLeave = (event) => {
+  if (event.relatedTarget == null) {
+    windowDropActive.value = false
+  }
+}
+
+const handleWindowDropEnd = () => {
+  windowDropActive.value = false
+}
+
+const handleDomDrop = async (event) => {
+  windowDropActive.value = false
+  const files = Array.from(event.dataTransfer?.files || [])
+  if (!files.length) return
+
+  try {
+    await ElMessageBox.confirm(`Send ${files.length} dropped file(s)?`, 'Send Files', {
+      confirmButtonText: 'Send',
+      cancelButtonText: 'Cancel',
+      type: 'info'
+    })
+  } catch {
+    return
+  }
+
+  await uploadFromBrowserFiles(files)
+}
+
+const confirmAndUploadPaths = async (paths) => {
+  windowDropActive.value = false
+
+  try {
+    await ElMessageBox.confirm(`Send ${paths.length} dropped file(s)?`, 'Send Files', {
+      confirmButtonText: 'Send',
+      cancelButtonText: 'Cancel',
+      type: 'info'
+    })
+  } catch {
+    return
+  }
+
+  await uploadFromPaths(paths)
+}
 
 const connectWS = () => {
   clearTimeout(reconnectTimer)
   if (!userId.value || !username.value) return
 
-  ws = new WebSocket(
-    `${getWsBase()}/ws?user_id=${encodeURIComponent(userId.value)}&user_name=${encodeURIComponent(username.value)}&room_id=default`
-  )
+  ws = new WebSocket(`${getWsBase()}/ws?user_id=${encodeURIComponent(userId.value)}&user_name=${encodeURIComponent(username.value)}&room_id=default`)
 
   ws.onopen = () => {
     connected.value = true
@@ -146,14 +228,14 @@ const connectWS = () => {
     }
 
     if (data.type === 'message_deleted') {
-      removeMessage(data.id, data.data || {})
+      removeMessageById(data.id)
       return
     }
 
     if (data.type !== 'chat') return
 
-    messages.value.push({
-      id: data.id || `${data.from}-${data.timestamp}-${Math.random()}`,
+    const incoming = normalizeMessage({
+      id: data.id,
       sender_id: data.from,
       sender_name: data.from_name,
       content: data.content,
@@ -163,62 +245,99 @@ const connectWS = () => {
       file_size: data.file_size,
       created_at: data.timestamp
     })
-    nextTick(scroll)
+
+    if (!messages.value.some((item) => item.id && item.id === incoming.id)) {
+      messages.value.push(incoming)
+      nextTick(scroll)
+    }
   }
 }
 
-const loadHistory = async (options = {}) => {
-  const { silent = false } = options
-  refreshing.value = true
+const refreshMessages = () => loadHistory({ silent: false })
+
+const loadHistory = async ({ silent = false } = {}) => {
+  refreshing.value = !silent
   try {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        if (isWailsRuntime()) {
-          const data = await WailsGetMessages('default', 1)
-          messages.value = Array.isArray(data) ? [...data].reverse() : []
-        } else {
-          const response = await fetch(`${getHttpBase()}/api/messages?room_id=default&page=1&page_size=100`)
-          if (!response.ok) throw new Error(`History request failed with status ${response.status}`)
-          const data = await response.json()
-          messages.value = [...(data.messages || [])].reverse()
-        }
-        nextTick(scroll)
-        if (!silent) {
-          ElMessage.success('Messages refreshed')
-        }
-        return
-      } catch (error) {
-        if (attempt === 2) {
-          ElMessage.error(error?.message || 'Failed to load history')
-        }
-        await new Promise((resolve) => setTimeout(resolve, 300))
-      }
+    let loaded = []
+    if (isWailsRuntime()) {
+      loaded = await WailsGetMessages('default', 1)
+    } else {
+      const response = await fetch(`${getHttpBase()}/api/messages?room_id=default&page=1&page_size=100`)
+      if (!response.ok) throw new Error(`History request failed with status ${response.status}`)
+      const data = await response.json()
+      loaded = data.messages || []
+    }
+
+    messages.value = [...loaded].reverse().map(normalizeMessage)
+    nextTick(() => {
+      scroll()
+      autoResizeInput()
+    })
+  } catch (error) {
+    if (!silent) {
+      ElMessage.error(error?.message || 'Failed to load history')
     }
   } finally {
     refreshing.value = false
   }
 }
 
-const refreshMessages = async () => {
-  if (refreshing.value) return
-  await loadHistory()
-}
-
 const send = () => {
   if (!input.value.trim() || !ws || ws.readyState !== WebSocket.OPEN) return
-  ws.send(JSON.stringify({ type: 'chat', content: input.value.trim(), room_id: 'default', msg_type: 'text' }))
+  ws.send(JSON.stringify({ type: 'chat', content: input.value, room_id: 'default', msg_type: 'text' }))
   input.value = ''
+  autoResizeInput()
+}
+
+const handlePaste = async (event) => {
+  const clipboard = event.clipboardData
+  if (!clipboard) return
+
+  const files = Array.from(clipboard.items || [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter(Boolean)
+
+  if (!files.length) return
+  event.preventDefault()
+
+  try {
+    await ElMessageBox.confirm(`Send ${files.length} pasted file(s)?`, 'Send Files', {
+      confirmButtonText: 'Send',
+      cancelButtonText: 'Cancel',
+      type: 'info'
+    })
+  } catch {
+    return
+  }
+
+  await uploadFromBrowserFiles(files)
 }
 
 const handleFiles = async (event) => {
   const files = Array.from(event.target.files || [])
   if (!files.length) return
+  await uploadFromBrowserFiles(files)
+  event.target.value = ''
+}
 
+const withUploadState = async (items, worker) => {
   uploading.value = true
-  upTotal.value = files.length
+  upTotal.value = items.length
   upDone.value = 0
 
-  for (const file of files) {
+  try {
+    for (const item of items) {
+      await worker(item)
+    }
+    ElMessage.success(`Uploaded ${upDone.value} file(s)`)
+  } finally {
+    uploading.value = false
+  }
+}
+
+const uploadFromBrowserFiles = async (files) => {
+  await withUploadState(files, async (file) => {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('uploader_id', userId.value)
@@ -226,24 +345,42 @@ const handleFiles = async (event) => {
 
     try {
       const response = await fetch(`${getHttpBase()}/api/upload`, { method: 'POST', body: formData })
-      if (!response.ok) throw new Error('Upload failed')
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '')
+        throw new Error(detail || `Upload failed with status ${response.status}`)
+      }
       upDone.value += 1
-    } catch {
-      ElMessage.error(`Failed: ${file.name}`)
+    } catch (error) {
+      ElMessage.error(`${file.name}: ${error.message || 'Upload failed'}`)
     }
-  }
-
-  uploading.value = false
-  event.target.value = ''
-  ElMessage.success(`Uploaded ${upDone.value} file(s)`)
+  })
 }
 
-const delMsg = async (msg, idx) => {
+const uploadFromPaths = async (paths) => {
+  await withUploadState(paths, async (path) => {
+    const fileName = path.split('\\').pop() || path
+    try {
+      const result = await SaveUploadedFile(path, userId.value, username.value)
+      if (result?.error) {
+        throw new Error(result.error)
+      }
+      upDone.value += 1
+    } catch (error) {
+      ElMessage.error(`${fileName}: ${error.message || 'Upload failed'}`)
+    }
+  })
+}
+
+const delMsg = async (msg) => {
+  if (!msg?.id) {
+    ElMessage.error('Message ID missing. Refresh and try again.')
+    return
+  }
   if (!window.confirm('Delete this message?')) return
 
   try {
     if (isWailsRuntime()) {
-      const result = await WailsDeleteMessage(msg.id || '', msg.sender_id || '', msg.content || '', msg.created_at || '', msg.file_url || '')
+      const result = await WailsDeleteMessage(msg.id, msg.sender_id || '', msg.content || '', msg.created_at || '', msg.file_url || '')
       if (result?.error) throw new Error(result.error)
     } else {
       const response = await fetch(`${getHttpBase()}/api/message/delete`, {
@@ -262,11 +399,48 @@ const delMsg = async (msg, idx) => {
       if (!response.ok || result.error) throw new Error(result.error || 'Delete failed')
     }
 
-    messages.value.splice(idx, 1)
+    removeMessageById(msg.id)
     ElMessage.success('Deleted')
   } catch (error) {
     ElMessage.error(error.message || 'Delete failed')
   }
+}
+
+const normalizeMessage = (msg) => ({
+  ...msg,
+  id: msg?.id || '',
+  content: msg?.content ?? '',
+  sender_id: msg?.sender_id ?? '',
+  sender_name: msg?.sender_name ?? 'Unknown',
+  msg_type: msg?.msg_type || 'text',
+  file_url: msg?.file_url || '',
+  file_name: msg?.file_name || '',
+  file_size: msg?.file_size || 0,
+  created_at: msg?.created_at || ''
+})
+
+const messageKey = (msg) => msg.id || `${msg.sender_id}|${msg.created_at}|${msg.file_url || msg.content}`
+
+const removeMessageById = (id) => {
+  if (!id) return
+  messages.value = messages.value.filter((item) => item.id !== id)
+}
+
+const autoResizeInput = () => {
+  if (!textInput.value) return
+
+  const lineCount = (input.value.match(/\n/g) || []).length + 1
+  textInput.value.style.height = '44px'
+  textInput.value.style.overflowY = 'hidden'
+
+  if (lineCount <= 3) {
+    const nextHeight = Math.min(textInput.value.scrollHeight, 88)
+    textInput.value.style.height = `${Math.max(nextHeight, 44)}px`
+    return
+  }
+
+  textInput.value.style.height = '88px'
+  textInput.value.style.overflowY = 'auto'
 }
 
 const fileId = (url) => (url ? url.split('/').pop() : '')
@@ -276,20 +450,6 @@ const dl = (url) => url && window.open(makeAbsoluteUrl(url), '_blank')
 const scroll = () => {
   if (msgBox.value) {
     msgBox.value.scrollTop = msgBox.value.scrollHeight
-  }
-}
-
-const removeMessage = (id, payload = {}) => {
-  const index = messages.value.findIndex((item) => {
-    if (id && item.id === id) return true
-    return (
-      item.sender_id === payload.sender_id &&
-      item.content === payload.content &&
-      item.created_at === payload.created_at
-    )
-  })
-  if (index !== -1) {
-    messages.value.splice(index, 1)
   }
 }
 
@@ -361,6 +521,37 @@ const color = (name = '') => {
   margin: 4px 0 0;
   color: #64748b;
   font-size: 13px;
+}
+
+.window-drop-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.22);
+  backdrop-filter: blur(2px);
+  z-index: 30;
+}
+
+.window-drop-card {
+  padding: 28px 32px;
+  border: 2px dashed #0284c7;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.96);
+  text-align: center;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.18);
+}
+
+.window-drop-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.window-drop-subtitle {
+  margin-top: 8px;
+  color: #64748b;
 }
 
 .actions {
@@ -435,6 +626,10 @@ const color = (name = '') => {
   word-break: break-word;
 }
 
+.text-content {
+  white-space: pre-wrap;
+}
+
 .msg.self .content,
 .msg.self .file-box {
   background: #0ea5e9;
@@ -501,7 +696,7 @@ const color = (name = '') => {
 
 .input-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
   padding: 14px 18px;
   background: rgba(255, 255, 255, 0.95);
@@ -524,10 +719,17 @@ const color = (name = '') => {
 .text-input {
   flex: 1;
   min-width: 0;
+  height: 44px;
+  min-height: 44px;
+  max-height: 88px;
   padding: 10px 14px;
   border: 1px solid #cbd5e1;
   border-radius: 12px;
   outline: none;
+  resize: none;
+  overflow-y: hidden;
+  line-height: 1.5;
+  font: inherit;
 }
 
 .text-input:focus {
