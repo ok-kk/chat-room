@@ -1,7 +1,7 @@
 ﻿<template>
   <div class="chat" @dragover.prevent @drop.prevent="handleDomDrop">
     <div class="header">
-      <div>
+      <div class="header-main">
         <h2>LAN Chat</h2>
         <p>{{ username || 'Anonymous' }}<span v-if="onlineCount"> · {{ onlineCount }} online</span></p>
       </div>
@@ -512,15 +512,23 @@ const color = (name = '') => {
   border-bottom: 1px solid #cbd5e1;
 }
 
+.header-main {
+  min-width: 0;
+  flex: 1;
+}
+
 .header h2 {
   margin: 0;
   color: #0f172a;
+  line-height: 1.2;
 }
 
 .header p {
   margin: 4px 0 0;
   color: #64748b;
   font-size: 13px;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .window-drop-overlay {
@@ -558,6 +566,8 @@ const color = (name = '') => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .messages {
@@ -760,8 +770,23 @@ const color = (name = '') => {
     max-width: 82%;
   }
 
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .actions {
+    width: 100%;
     gap: 6px;
+    justify-content: flex-start;
+  }
+
+  .header h2 {
+    font-size: 22px;
+  }
+
+  .header p {
+    max-width: 100%;
   }
 }
 </style>
